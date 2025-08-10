@@ -112,6 +112,7 @@
             touch-action: none;
             text-align: center;
             user-select: none;
+            cursor: pointer;
         }
         
         .mobile-upgrade-btn:active {
@@ -290,8 +291,8 @@
                 <span id="swordUpgradeDesc">增加剑气范围</span>
             </div>
             <div>选择升级后自动进入下一关（若该项已满级，将获得+200分）</div>
-            <button id="mobileBulletUpgrade" class="mobile-upgrade-btn">点击升级子弹 (Z)</button>
-            <button id="mobileSwordUpgrade" class="mobile-upgrade-btn">点击升级剑气 (X)</button>
+            <button id="mobileBulletUpgrade" class="mobile-upgrade-btn" style="display:block;">点击升级子弹 (Z)</button>
+            <button id="mobileSwordUpgrade" class="mobile-upgrade-btn" style="display:block;">点击升级剑气 (X)</button>
         </div>
 
         <!-- 移动端控制器 -->
@@ -311,29 +312,29 @@
         // 检测是否移动端
         const isMobile = (() => /Mobi|Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent))();
         
-        // 统一逻辑：游戏内部基准分辨率固定为 720x1280（9:16 竖屏）
-        // PC 使用 1280x720 横屏；移动端强制 9:16，通过缩放贴合任意屏幕
-        const BASE_W = 720, BASE_H = 1280; // 9:16
+        // 统一逻辑：PC和移动端都使用 1280x720（16:9 横屏）
+        // 移动端通过缩放适配不同屏幕尺寸
+        const BASE_W = 1280, BASE_H = 720; // 16:9
         function applyCanvasSizeForDevice() {
           const container = document.getElementById('gameContainer');
           const mobileControls = document.getElementById('mobileControls');
           const mobileStartBtn = document.getElementById('mobileStartBtn');
+          // 统一使用 1280x720
+          canvas.width = BASE_W;
+          canvas.height = BASE_H;
+          
           if (isMobile) {
-            // 固定内部画布为 720x1280
-            canvas.width = BASE_W;
-            canvas.height = BASE_H;
-            // 根据窗口计算缩放，使得内容保持 9:16 并完整显示（contain）
+            // 根据窗口计算缩放，使得内容保持 16:9 并完整显示（contain）
             const vw = window.innerWidth;
             const vh = window.innerHeight;
-            const targetRatio = BASE_W / BASE_H; // 0.5625
+            const targetRatio = BASE_W / BASE_H; // 1.777...
             const screenRatio = vw / vh;
-            // 为防止被系统地址栏、手势区域影响，取实际可见尺寸
             let scale;
             if (screenRatio > targetRatio) {
-              // 屏幕更“宽”，以高度为准
+              // 屏幕更"宽"，以高度为准
               scale = vh / BASE_H;
             } else {
-              // 屏幕更“窄”，以宽度为准
+              // 屏幕更"窄"，以宽度为准
               scale = vw / BASE_W;
             }
             container.style.transformOrigin = 'top left';
@@ -349,10 +350,7 @@
             mobileControls.style.display = 'block';
             mobileStartBtn.style.display = 'inline-block';
           } else {
-            // PC：维持横屏 1280x720
-            canvas.width = 1280;
-            canvas.height = 720;
-            // 清除移动端样式
+            // PC：清除移动端样式
             container.style.transform = '';
             container.style.left = '';
             container.style.top = '';
@@ -1056,10 +1054,47 @@
         
         // 开始游戏
         function startGame() {
+            // 移动端音效解锁 - 用户交互后恢复AudioContext
             if (audioContext.state === 'suspended') {
-                audioContext.resume();
+                audioContext.resume().catch(e => console.log('AudioContext resume failed:', e));
+            }
+            // 在微信等移动端环境中创建一个短暂的静音来解锁音频
+            if (isMobile) {
+                try {
+                    const silentOsc = audioContext.createOscillator();
+                    const gainNode = audioContext.createGain();
+                    silentOsc.connect(gainNode);
+                    gainNode.connect(audioContext.destination);
+                    gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+                    silentOsc.start(audioContext.currentTime);
+                    silentOsc.stop(audioContext.currentTime + 0.1);
+                } catch (e) {
+                    console.log('Silent unlock failed:', e);
+                }
             }
             
+            // 额外：监听首次触摸/点击以解锁音频（微信/移动端兼容）
+            let audioUnlocked = false;
+            function tryUnlockAudio() {
+                if (audioUnlocked) return;
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume().catch(()=>{});
+                }
+                // 一次短静音
+                try {
+                    const s = audioContext.createOscillator();
+                    const g = audioContext.createGain();
+                    s.connect(g); g.connect(audioContext.destination);
+                    g.gain.setValueAtTime(0, audioContext.currentTime);
+                    s.start(audioContext.currentTime);
+                    s.stop(audioContext.currentTime + 0.05);
+                } catch{}
+                audioUnlocked = true;
+                window.removeEventListener('touchstart', tryUnlockAudio, true);
+                window.removeEventListener('click', tryUnlockAudio, true);
+            }
+            window.addEventListener('touchstart', tryUnlockAudio, true);
+            window.addEventListener('click', tryUnlockAudio, true);
             gameState = 'playing';
             gameStarted = true;
             document.getElementById('startScreen').style.display = 'none';
@@ -1218,12 +1253,20 @@
             mobileSwordBtn.addEventListener('touchstart', () => {
                 if (gameState === 'upgrade') upgradeSword();
             });
+            // 同时支持PC点击
+            mobileBulletBtn.addEventListener('click', () => {
+                if (gameState === 'upgrade') upgradeBullet();
+            });
+            mobileSwordBtn.addEventListener('click', () => {
+                if (gameState === 'upgrade') upgradeSword();
+            });
 
             // 当升级界面显示/隐藏时，控制移动端按钮显隐
             const upgradeObserver = new MutationObserver(() => {
                 const visible = upgradeScreen.style.display !== 'none';
-                mobileBulletBtn.style.display = isMobile && visible ? 'block' : 'none';
-                mobileSwordBtn.style.display = isMobile && visible ? 'block' : 'none';
+                // 统一PC/移动端：升级界面显示时总是显示按钮
+                mobileBulletBtn.style.display = visible ? 'block' : 'none';
+                mobileSwordBtn.style.display = visible ? 'block' : 'none';
             });
             upgradeObserver.observe(upgradeScreen, {attributes: true, attributeFilter: ['style']});
         }
